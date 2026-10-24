@@ -1,0 +1,67 @@
+# The two scripts, in full
+
+Every argument of `diff_system.py` and `deprecate.py`. `SKILL.md` has the workflow; this is the reference behind it.
+
+## 1. `scripts/diff_system.py` — stdlib Python 3, no dependencies
+
+| Flag | Does |
+|---|---|
+| `old` `new` | two snapshots: `system.json`, `tokens.css`, a `contract.json`, or a directory containing one. Without `old`, the published snapshot the project's `.design-suite.json` names (`baselines.system`); without `new`, the token files it lists (web-design-studio's `references/project-contract.md`) |
+| `--format report\|json\|changelog\|migration-guide` | output shape (default `report`) |
+| `-o FILE` | write there instead of stdout |
+| `--from-version X.Y.Z` | the version `old` shipped as; yields a real recommended version |
+| `--project NAME` · `--date YYYY-MM-DD` | used by the changelog and guide |
+| `--deprecations FILE` | the ledger; makes the gate binding. A token the old DTCG snapshot marks `$deprecated` counts as recorded too (below) |
+| `--gate names\|major\|none` | `names` (default): a vanished name with no record fails |
+| `--mapping PATH` | the codemod path quoted in the migration guide |
+| `--no-contrast` | skip the contrast pass |
+| `--no-upstream` | use the vendored token parser even when `design-system-docs` is reachable |
+| `--color-impl PATH` / `--check-color-impl` | bind to, or verify against, the studio's colour maths |
+
+Exit `0` clean · `1` the gate fired · `2` bad invocation.
+
+**On the contrast column:** it uses the OKLab/WCAG functions from `web-design-studio/scripts/generate_color_ramp.py`, imported directly when the suite is installed whole and vendored byte-identically otherwise, with `--check-color-impl` proving the two agree on six probe pairs. Ratios are computed from the resolved OKLCH text, never from the 8-bit hex — quantising first reports 4.91:1 where the ramp generator reports 4.92:1, and a suite whose tools disagree in the second decimal is a suite nobody quotes.
+
+**On a `contract.json`:** design-system-docs' `extract_system.py --contract` writes it, the default value and tier of every token. It holds no themes, densities, conditions, notes, layers or components, so when either snapshot is one, the other is cut down to the same before the diff: the default values and tiers are compared, and the report says so. A contract diffed against the `tokens.css` it came from has no changes.
+
+**On a DTCG file's `$deprecated` (P31 part 4):** the format lets a token, or a group for its tokens, say it is going away: `true`, or "an explanation", such as "Please use {button.activeBorder} instead" ([2025.10, Deprecated](https://www.designtokens.org/tr/2025.10/format/#deprecated)). When the old snapshot is a DTCG file (or a resolver), each token it marks counts as recorded for the gate, and the report says `deprecation  marked: $deprecated in OLD`: the file announced it a release ago, so removing it now keeps the rule. A ledger record for the same name wins. The replacement is the token the reason names in braces (`{bg.brand}` is `--bg-brand`). `deprecate.py import` writes the marks into the ledger with your `--since` and `--removal`, so `status`, `scan` and `mapping` see them too; a name the ledger already holds is kept as it is.
+
+**On a DTCG snapshot against a stylesheet:** a value is compared by what it means, not how it is spelt: `oklch(88% …)` and `oklch(88.0% …)`, `0px 1px 2px 0px …` and `0 1px 2px …`, `cubic-bezier(0, 0, 1, 1)` and `linear` are the same, since each parses to the same DTCG type and value (part by part for a value with no type, such as a transition). A token a DTCG 2025.10 file cannot hold (`clamp()`, `ch`, `em`, or a reference to one) is left out of it, and the writer keeps it, with its CSS value, in the file's `$extensions` (`notWritten`). diff_system reads those tokens back, with any `$deprecated` they had, into a snapshot that is such a file, on either side: from each file `.design-suite.json` lists, in order, or from the sources a resolver's default contexts read. Each is then compared like any other: unchanged is no change, and a new or changed `clamp()` is one. A font stack's names match quoted or not, except a quoted keyword: `"serif"` is a family called serif, not the generic one.
+
+**On reading `tokens.css` directly:** `design-system-docs`' extractor is imported and run in-process when it is reachable, so there is one tier classifier and one resolver in the suite rather than two. The vendored fallback exists so the skill works standalone, and it produces identical classifications on the canonical token file.
+
+---
+
+## 2. `scripts/deprecate.py` — stdlib Python 3, no dependencies
+
+| Command | Does |
+|---|---|
+| `add` | record a deprecation, inject the marker, emit the codemod |
+| `status [--version X.Y.Z]` | what is pending, what is due, what is still in use |
+| `scan REPO…` | actual usage across consumer repos, per call site, labelled `codemod` or `manual`; the suite's own JSON records (a ledger, a mapping, a scan report, a docs snapshot) name tokens without using them, and are skipped |
+| `mapping [-o FILE]` | re-emit the whole ledger's `mapping.json` |
+| `retire --name NAME` | mark it removed; refuses while the last scan shows usage |
+| `import FILE… --since --removal` | record each token a DTCG file marks `$deprecated` (below) |
+
+| `add` flag | Does |
+|---|---|
+| `--name` `--kind` | the subject; `token` · `socket` · `component` · `variant` · `state` · `prop` · `theme` · `repoint` |
+| `--since` `--removal` | the promise. A removal less than a minor version away is refused |
+| `--replacement` | what to use instead; omit when there is no one-to-one. Refused (exit 2, unless `--force`) when it is the token itself, is deprecated or removed in the ledger, or is declared in none of the `--source` files |
+| `--reason` `--notes` | why, and what the codemod will not do for them |
+| `--codemod auto\|mechanical\|manual\|none` | `auto` is mechanical when a replacement exists |
+| `--source FILE` | inject the marker here (repeatable); idempotent |
+| `--mapping FILE` | write the ledger's codemod mapping |
+| `--force` · `--dry-run` | override the window check · write nothing |
+
+| `scan` flag | Does |
+|---|---|
+| `--record` | write the counts into the ledger as evidence |
+| `--fail-on-usage` | exit 1 if anything is still in use |
+| `--limit N` · `--format report\|json` | call sites printed per consumer · output shape |
+
+Exit `0` fine · `1` something due is still in use, or `--fail-on-usage` found hits · `2` bad invocation.
+
+**Option values that start with `--`.** Every subject this script takes is a CSS custom property, so `--name --fg-subtle` is the common case and argparse reads the value as another flag. Both `--name=--fg-subtle` and `--name --fg-subtle` work; the second is normalised before parsing, and only when the follower is not itself a known flag.
+
+**On the emitted mapping.** `apply_codemod`'s per-slot pass deliberately skips any slot already containing `var(--` — its job is literals → tokens. So a token rename is emitted as declaration-scope rules, one per property; shadows go through the value scope, which has no such guard; component and variant renames use the tailwind scope, the one place the engine rewrites an identifier rather than a value. What that does not reach — socket defaults, shorthands, rules that also set a font property, tokens inside JS — is listed in `references/deprecation.md` §6, and `scan` labels every one of those call sites `manual` with the reason, so the honest list is generated from the consumer's real code rather than from memory.

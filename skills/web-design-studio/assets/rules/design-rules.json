@@ -1,0 +1,533 @@
+{
+  "about": "The one spec the three gates share: audit_design.py, stylelint.config.mjs and eslint.design.config.mjs. tools/sync_rules.py writes its data (the layer order, the nesting depth, the system colours, the value shapes and allowlists, the colour functions, the theme bindings, the geometry properties) into a marked block in each gate, and its --check fails when a block drifts from this file. Each section's `gates` names the tools that enforce it, and the conformance tests (tests/test_rules_spec.py, tests/test_real_tools.py) run every `allowed` and `refused` example through each of them. Change a rule here first, rerun the tool, then change whatever gate code the data cannot express. Source of the rules: token-contract.md, the Nine Laws.",
+  "nesting": {
+    "gates": ["audit", "stylelint"],
+    "max_depth": 2,
+    "counts": "Nested style rules below the top-level rule. @media, @supports, @layer, @container and @scope do not count, and neither does a rule whose selector is only pseudo-classes (`:hover`, as opposed to `&:hover`).",
+    "allowed": [
+      ".card { & .title { &:hover { color: var(--fg-strong); } } }",
+      ".card { & .title { & :where(.icon) { :hover { color: var(--fg-strong); } } } }"
+    ],
+    "refused": [
+      ".a { & .b { & .c { & .d { color: var(--fg-strong); } } } }"
+    ]
+  },
+  "selectors": {
+    "gates": ["audit", "stylelint"],
+    "max_specificity": "0,3,1",
+    "max_compounds": 3,
+    "rule": "Law 5: a selector says what an element is; layers decide who wins. Its specificity stays at or under 0,3,1, compared column by column: three classes, attributes or pseudo-classes, and one element. `:where()` scores zero, `:is()`, `:not()` and `:has()` score their heaviest argument, and a nested rule's `&` scores its parent's, as Selectors 4 says. A selector holds at most three compound selectors, counted as written, inside a functional pseudo-class too: `:where()` takes away the weight, not the knowledge of the DOM. stylelint 17 also counts the `+` of an An+B (`:nth-last-child(n + 5)`), so a quantity query carries its disable comment there. An id is refused on its own.",
+    "allowed": [
+      ".card .card__title",
+      ".a.b.c",
+      ".prose .note.is-open p",
+      ".list > .item + .item",
+      ".tabs [aria-selected=\"true\"]",
+      ".menu:has(> .menu__item)",
+      ":where(.a.b.c.d)",
+      ":where([data-label=\")\"].a.b.c.d)",
+      ".card :where(.a .b)"
+    ],
+    "refused": [
+      ".a.b.c.d",
+      ".a.b.c p span",
+      ".card:is(.a.b.c)",
+      ".a.b.c::slotted(.d)",
+      ".nav .nav__list .nav__item a",
+      ".card .header .title .icon",
+      ":where(.a .b .c .d)"
+    ]
+  },
+  "zero": {
+    "gates": ["audit", "stylelint"],
+    "rule":"A literal 0 is allowed wherever a length token is. --space-0 exists for token files and layout primitives; component code writes 0.",
+    "allowed": [".card { padding: 0; }", ".card__media { margin-block-end: 0; }"]
+  },
+  "tiers": {
+    "gates": ["audit", "stylelint", "eslint"],
+    "rule":"Law 6: component code reads roles. Reading a Tier-1 primitive that has a role (with_role, by prefix, with the advice the gates give) skips a tier. Not leaks: the page-rhythm roles that live under --space- (tier2_exceptions), and the null-outs, which assert no value (nulls). A primitive with no role (--radius-*, --weight-*, --z-*, --font-*, ...) is read directly, and so is a motion longhand's --dur-* or --ease-*; a motion shorthand that splits a --motion-* pair draws a warning from the audit alone. The audit and stylelint (design/tier1-primitive) read every var() in a component file or a `components` layer and its sub-layers (allowed, refused; stylesheets); the audit and ESLint read a Tailwind class's (--name) shorthand, with or without a type hint, and an inline custom property's string value, in any JSX file (allowed_jsx, refused_jsx). design-system-docs' extract_system.py reads the same three lists for its tier1-leak gap, so the two agree. A project's own ramps have roles too: the steps its .design-suite.json's token files declare (--brand-500) draw project_ramps' advice in all three gates, which read the config from the working directory, as the audit does.",
+    "with_role": {
+      "space-": "a proximity/inset role (--gap-related, --pad-card, --space-section)",
+      "neutral-": "a color role (--bg-surface, --fg-muted, --border-default)",
+      "accent-": "a color role (--bg-accent, --fg-accent, --border-accent)",
+      "success-": "a color role (--bg-success, --fg-success)",
+      "warning-": "a color role (--bg-warning, --fg-warning)",
+      "danger-": "a color role (--bg-danger, --fg-danger)",
+      "info-": "a color role",
+      "text-": "a type role (--type-body, --type-h2, --type-ui)",
+      "leading-": "a type role (--type-*), which carries leading in its shorthand",
+      "shadow-": "an elevation role (--elevation-card, --elevation-modal)"
+    },
+    "tier2_exceptions": ["--space-section", "--space-subsection", "--space-block",
+                         "--space-fluid-sm", "--space-fluid-md", "--space-fluid-lg", "--space-fluid-xl"],
+    "nulls": ["--space-0", "--radius-none", "--shadow-none"],
+    "project_ramps": "a color role (--bg-*, --fg-*, --border-*)",
+    "allowed": [".card { --card-gap: var(--space-0); gap: var(--card-gap); }",
+                ".card { box-shadow: var(--shadow-none); }",
+                ".card { padding-block: var(--space-section); }",
+                ".card { padding: var(--pad-card); }",
+                ".card { font-weight: var(--weight-semibold); border-radius: var(--radius-md); }",
+                ".card { transition-duration: var(--dur-fast); transition-timing-function: var(--ease-out); }"],
+    "refused": [".card { padding: var(--space-4); }",
+                ".card { color: var(--neutral-700); }",
+                ".card { gap: var(--space-0-5); }",
+                ".card { --card-gap: var(--space-4); gap: var(--card-gap); }",
+                ".card { line-height: var(--leading-tight); }"],
+    "stylesheets": {
+      "about": "Whole stylesheets outside a component file, where the layer decides: the components layer and its sub-layers, by the layer's full name. A dotted name is a nested layer, so base.components is a layer inside base.",
+      "allowed": ["@layer base.components { .card { padding: var(--space-4); } }"],
+      "refused": ["@layer components { .card { padding: var(--space-4); } }",
+                  "@layer components.card { .card { padding: var(--space-4); } }"]
+    },
+    "allowed_jsx": ["<div className=\"p-(--pad-card) gap-(--space-section)\" />",
+                    "<div className=\"shadow-(--shadow-none)\" />",
+                    "<div style={{ '--card-gap': 'var(--gap-related)' }} />"],
+    "refused_jsx": ["<div className=\"p-(--space-6)\" />",
+                    "<div className=\"bg-(--neutral-800)\" />",
+                    "<div className=\"text-(length:--text-lg)\" />",
+                    "<div style={{ '--card-gap': 'var(--space-4)' }} />"],
+    "names": {
+      "about": "P31 part 5: a project whose tokens carry a tool's names maps them onto the grammar in its .design-suite.json's `names`, and all three gates read Law 6 through the map. Style Dictionary's css transform group (name/kebab) and Terrazzo's default join a token's path with `-`, so color.neutral.500 is --color-neutral-500 and color.bg.surface is --color-bg-surface. `prefixes` are taken off a name that starts with one (the first that fits), and `rename` maps one name to another, before the lists above are read: --color-neutral-500 is --neutral-500, a primitive with a role, and --color-bg-surface is --bg-surface, a role. Without `names`, a prefixed name matches no list, so the examples here pass in a project without the config.",
+      "config": {"prefixes": ["color-", "size-"], "rename": {"--gray-500": "--neutral-500"}},
+      "allowed": [".card { background: var(--color-bg-surface); }",
+                  ".card { padding-block: var(--size-space-section); }",
+                  ".card { box-shadow: var(--size-shadow-none); }",
+                  ".card { border-radius: var(--size-radius-md); }"],
+      "refused": [".card { color: var(--color-neutral-700); }",
+                  ".card { padding: var(--size-space-4); }",
+                  ".card { border-color: var(--gray-500); }"],
+      "allowed_jsx": ["<div className=\"bg-(--color-bg-surface) p-(--size-space-section)\" />"],
+      "refused_jsx": ["<div className=\"bg-(--color-neutral-800)\" />",
+                      "<div className=\"p-(--size-space-6)\" />",
+                      "<div className=\"border-(--gray-500)\" />",
+                      "<div style={{ '--card-gap': 'var(--size-space-4)' }} />"],
+      "overlaps": {
+        "about": "Codex on #107: the gates read a name as grammar_name() does. A rename comes first, then the first prefix that fits, so with color-neutral- before color-, --color-neutral-bg-surface is --bg-surface, a role. A step of the project's own ramps under a prefix (--color-brand-500, with --brand-500 in its tokens) is a primitive with a role. A name the map changes is judged by its mapped name alone, so --neutral-brand renamed to a role passes. CodeRabbit on #107: the project's ramp steps are read through the map as well, so a step renamed to a role (--sea-600) passes, and a step the tokens file spells with a prefix (--color-ocean-500, as Style Dictionary writes it) is still a primitive.",
+        "config": {"prefixes": ["color-neutral-", "color-"], "rename": {"--neutral-brand": "--bg-surface", "--sea-600": "--bg-brand"}},
+        "tokens": "@layer tokens {\n  :root {\n    --brand-500: #b4400a;\n    --sea-600: #0a5ab4;\n    --color-ocean-500: #0a7a5a;\n  }\n}\n",
+        "allowed": [".card { background: var(--color-neutral-bg-surface); }",
+                    ".card { border-color: var(--neutral-brand); }",
+                    ".card { background: var(--sea-600); }"],
+        "refused": [".card { color: var(--color-brand-500); }",
+                    ".card { color: var(--color-ocean-500); }"],
+        "allowed_jsx": ["<div className=\"bg-(--color-neutral-bg-surface) border-(--neutral-brand)\" />",
+                        "<div className=\"bg-(--sea-600)\" />"],
+        "refused_jsx": ["<div className=\"bg-(--color-brand-500)\" />",
+                        "<div className=\"bg-(--color-ocean-500)\" />"]
+      }
+    }
+  },
+  "margins_in_components": {
+    "gates": ["audit", "stylelint"],
+    "rule": "Law 2: a component never sets its own outer margin. Legal: alignment, 0s and autos only (`0 auto`, `0 0 0 auto`), calc(var(--token) * -1) to cancel a known token, the owl, the whole `> * + *` in the parent's own rule, through any @media around the margin, and a margin on the component's own generated content (::before, ::after, ::marker), which sits inside it. `.card + *` is not the owl: it is the component spacing its next sibling. `var(--gap-related) auto` is not alignment: the token sets the component's own block margin. A selector that names `prose` is no exemption: a `.prose` flow container is a layout, and belongs in a layout file, where its owl is allowed anyway.",
+    "properties": ["margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "margin-inline", "margin-block",
+                   "margin-inline-start", "margin-inline-end", "margin-block-start", "margin-block-end"],
+    "values": ["ALIGN", "CANCEL", "KEYWORDS"],
+    "allowed_values": ["0", "auto", "0 auto", "auto 0", "calc(var(--card-inset) * -1)", "calc(-1 * var(--card-inset))"],
+    "refused_values": ["16px", "var(--gap-related)", "calc(var(--card-inset) * -2)", "var(--gap-related) auto", "0px auto"],
+    "owl_selectors": [".stack > * + *", ".flow > * + *"],
+    "refused_selectors": [".card *", ".card p", ".card > svg", ".card:is(h2, h3)"],
+    "allowed_selectors": [".card:nth-child(2n + 1)", ".card__icon:where(:hover, :focus-visible)",
+                          ".card[data-state=\"open\"]", ".card::before", ".card:lang(en)"],
+    "allowed": [".stack > * + * { @media (width >= 48rem) { margin-block-start: var(--gap-grouped); } }",
+                ".card__close { margin: 0 0 0 auto; }",
+                ".card::before { margin-inline-end: var(--gap-related); }",
+                ".card { &::after { margin-inline-start: var(--gap-related); } }"],
+    "refused": [".card + * { margin-block-start: var(--gap-related); }",
+                ".card__title { margin: var(--gap-related) auto; }",
+                ".prose { margin-block: var(--gap-grouped); }",
+                ".card::before, .card__title { margin-inline-end: var(--gap-related); }"]
+  },
+  "geometry": {
+    "gates": ["audit"],
+    "properties": ["top", "right", "bottom", "left", "inset", "inset-block", "inset-block-start", "inset-block-end",
+                   "inset-inline", "inset-inline-start", "inset-inline-end"],
+    "rule": "A position is geometry, not a step of a scale: `calc((var(--tap-min) - 100%) / -2)` centres a hit area on its box, and a percentage, a factor of a token, or an em (sup and sub ride on their text) is how geometry is written. So the audit refuses only a literal length that is not an em, and stylelint has no allowlist for these properties, because no shape can name every correct calc(). The audit reads the list from GEOMETRY_PROPERTIES.",
+    "allowed": ["inset-block-start: calc((var(--tap-min) - 100%) / -2)", "inset: 0", "top: 50%",
+                "inset-block-start: -0.4em", "inset-inline-end: var(--gap-related)"],
+    "refused": ["top: 13px", "inset-inline-start: 1rem", "inset: -0.4em 12px"]
+  },
+  "var_fallback": {
+    "gates": ["audit", "stylelint"],
+    "rule": "A var() fallback is not checked: the token is the value, and the fallback only renders when the token is missing.",
+    "allowed": ["var(--fg-muted)", "var(--fg-muted, #666)", "var(--card-pad, var(--pad-card))"]
+  },
+  "system_colors": {
+    "gates": ["audit", "stylelint"],
+    "names": ["accentcolor", "accentcolortext", "activetext", "buttonborder", "buttonface", "buttontext", "canvas", "canvastext", "field", "fieldtext", "graytext", "highlight", "highlighttext", "linktext", "mark", "marktext", "selecteditem", "selecteditemtext", "visitedtext"],
+    "rule": "A CSS system colour (Canvas, ButtonText, Highlight and the rest) is correct only inside @media (forced-colors: active), where the user's palette replaces the page's. Anywhere else it is a colour no token controls, no theme re-points and no contrast check measures. CSS keywords are case-insensitive, so every spelling counts. stylelint enforces this with design/system-colors-in-forced-colors and the audit as L1 system-color, both in the properties `properties` matches; others are left alone, because `canvas` or `mark` may be a grid-area or an animation name.",
+    "properties": "^(?:color|fill|stroke|stop-color|flood-color|lighting-color|accent-color|caret-color|background(?:-color)?|border(?:-[a-z]+)*|outline(?:-color)?|text-decoration(?:-color)?|text-emphasis(?:-color)?|column-rule(?:-color)?|box-shadow|text-shadow)$",
+    "allowed": [
+      "@media (forced-colors: active) { .card { border-color: ButtonText; } }",
+      "@media (forced-colors: active) { .card { outline-color: highlight; } }",
+      ".card { @media (forced-colors: active) { outline-color: Highlight; } }"
+    ],
+    "refused": [".badge { color: GrayText; }", ".panel { border: var(--stroke-default) solid ButtonBorder; }"]
+  },
+  "sass": {
+    "gates": ["audit", "stylelint"],
+    "about": "The audit reads SCSS, and so does the stylelint config (D3, P37): an override reads every .scss file through postcss-scss with stylelint-config-standard-scss, restates the config's own rules over it, and adds design/sass-variable-literal, so a .scss file gets every rule a .css file does; the component and token file classes name their .scss files too, and a Sass variable in a value reads as a token in both gates (values). ESLint reads no stylesheet. Indented Sass (.sass) has no braces to follow: the audit lists each such file as skipped and never passes one, and stylelint's override does not name it.",
+    "definitions": {
+      "gates": ["audit"],
+      "rule": "A @mixin or @function body emits nothing where it is written, so a rule inside one is not unlayered CSS (Law 5); the layer is checked where the mixin is included. A mixin that holds a whole rule emits it there, so including one at the root of a file is unlayered CSS, directly or through another mixin that includes it; a mixin defined in another file is not followed. An interpolation, #{…}, is text in a selector, a prelude or a value: its braces open and close no rule. stylelint has no rule for unlayered CSS, so these are the audit's alone.",
+      "allowed": [
+        "@mixin focus-ring { &:where(:focus-visible) { outline: var(--stroke-focus) solid var(--border-focus); } }",
+        "@mixin cq($name, $min) { @container #{$name} (inline-size >= #{$min}) { @content; } }",
+        "@layer components { @each $name in (sm, lg) { .card-#{$name} { padding: var(--pad-card); } } .card { color: var(--fg-strong); } }",
+        "@mixin card { .card { padding: var(--pad-card); } }\n@layer components { @include card; }",
+        "@mixin card { .card { padding: var(--pad-card); } }\n@mixin wrapper { @include card; }\n@layer components { @include wrapper; }"
+      ],
+      "refused": [
+        "@mixin card { padding: var(--pad-card); }\n.card { @include card; }",
+        "@mixin card { .card { padding: var(--pad-card); } }\n@include card;",
+        "@mixin card { .card { padding: var(--pad-card); } }\n@mixin wrapper { @include card; }\n@include wrapper;"
+      ]
+    },
+    "variables": {
+      "gates": ["audit", "stylelint"],
+      "rule": "Law 1: a Sass variable that holds a length, a hex or functional colour, a duration or an easing curve is a literal under another name; a quoted string is text, whatever it spells. It is fixed at compile time, so no theme re-points it, --density cannot reach it and DevTools does not show it. It is refused outside a token file, in a map as in a single value. Two kinds are left alone: a breakpoint ($bp, $bp-*, $breakpoint*), which must be a Sass value because a media query condition cannot read a custom property, and a variable local to a @function, which is a step in a computation.",
+      "allowed": [
+        "$bp: (sm: 30rem, md: 48rem, lg: 64rem);",
+        "$breakpoint-md: 48rem;",
+        "$breakpointSmall: 48rem;",
+        "$loading-label: \"Please wait 200ms\";",
+        "$statuses: success, warning, danger;",
+        "$columns: 12;",
+        "@function rem($px) { $ratio: math.div($px, 16px); @return $ratio * 1rem; }"
+      ],
+      "refused": [
+        "$card-padding: 24px;",
+        "$card-bg: #ffffff;",
+        "$card-overlay: rgba($brand, 0.5);",
+        "$card-fade: 200ms;",
+        "$card-ease: cubic-bezier(0.2, 0, 0, 1);",
+        "$sizes: (sm: 12px, md: 16px);",
+        "$insets: (none: 0px, sm: 12px);"
+      ]
+    }
+  },
+  "layers": {
+    "gates": ["audit", "stylelint"],
+    "order": [
+      "reset",
+      "vendor",
+      "tokens",
+      "theme",
+      "base",
+      "layout",
+      "components",
+      "utilities",
+      "overrides"
+    ],
+    "statement": "@layer reset, vendor, tokens, base, layout, components, utilities, overrides;",
+    "rule": "Law 5. The entry stylesheet names the layers once, first, in this order: a layer may be left out but never moved, and other layers may sit between them. `theme` is Tailwind v4's generated theme and only a Tailwind entry names it. A layer may hold sub-layers, ordered inside it (`@layer components { @layer base, skin; }`, then `@layer components.skin { … }`): they rank inside their parent and cannot leave it, so the order holds (stack-vanilla-css.md). `vendor` holds CSS you do not control, imported with `layer(vendor)`. The statement names it even before there is any, because a layer first named by its import is appended after `overrides`, where the vendor's rules beat every rule you write (SB-A8). So every layer a file imports into must be in that file's statement, and the statement comes before the import: an `@import … layer(vendor)` above it names `vendor` first, whatever the statement then says. The canonical entries are web-design-studio/assets/starter/styles/index.css, and assets/configs/index.tailwind.css and index.tailwind-v3.css.",
+    "imports": "A file that opens its own `@layer` block, as every starter file does, is imported bare: `@import url(\"base.css\") layer(base)` nests it as `base.base` (SB-A23). `layer()` is for files that name no layer: vendor CSS and Tailwind's own files.",
+    "allowed": [
+      "@layer reset, vendor, tokens, base, layout, components, utilities, overrides;",
+      "@layer reset, tokens, base, layout, components;",
+      "@layer reset, vendor, tokens, theme, base, layout, components, utilities, overrides;",
+      "@layer reset, vendor, tokens, base, layout, components, utilities, overrides;\n@import url(\"vendor/datepicker.css\") layer(vendor);",
+      "@layer reset, tokens, base, layout, components, utilities;\n@layer components {\n  @layer base, skin;\n}\n@layer components.base { .card { --card-bg: var(--bg-surface); } }\n@layer components.skin { .card { --card-bg: var(--bg-sunken); } }",
+      "@layer reset, vendor, tokens, base, layout, components, utilities, overrides, print;",
+      "@layer reset, tokens, base, legacy, layout, components;\n@layer legacy {\n  .old-card { color: var(--fg-default); }\n}",
+      "@layer reset, tokens, base, layout, components, base.print;",
+      "@layer reset, tokens, base, layout, components, legacy.skin;\n@layer legacy.skin {\n  .old-card { color: var(--fg-default); }\n}",
+      "@layer reset, tokens, base, layout, components, legacy.skin;\n@import url(\"legacy.css\") layer(legacy);"
+    ],
+    "refused": [
+      "@layer reset, components.skin, base;",
+      "@layer reset, tokens, vendor, base, layout, components, utilities, overrides;",
+      "@layer vendor, reset, tokens, base, layout, components, utilities, overrides;",
+      "@layer reset, tokens, base, layout, components, utilities, overrides;\n@import url(\"vendor/datepicker.css\") layer(vendor);",
+      "@import url(\"vendor/datepicker.css\") layer(vendor);\n@layer reset, vendor, tokens, base, layout, components, utilities, overrides;",
+      "@layer base { body { margin: 0; } }\n@layer reset, vendor, tokens, base, layout, components, utilities, overrides;"
+    ]
+  },
+  "values": {
+    "gates": ["audit", "stylelint"],
+    "rule": "Laws 1, 3 and 6: a design property takes a token through var(), or one of the few values that are not a design decision: 0, the CSS-wide keywords, and the keywords its family lists. stylelint allows exactly these values, property by property (declaration-property-value-allowed-list compares the whole value). The audit reads the same allowlists for the spacing, stroke, motion and sizing families (SPACING_VALUES and the rest), and refuses the literals the other families leave out; a value holding a Sass variable is judged with each reference read as a token, since the audit cannot resolve it (sass.variables): `padding: $space 5%` is refused as `var(--x) 5%` would be. An allowlist names what is correct, so 13px, 0.8125rem and clamp(12px, 2vw, 14px) are refused alike, and so is the spelling nobody has thought of yet.",
+    "lists": "In a family's `values`, KEYWORDS is `keywords`, COLOUR_WORDS is `colour_words` and every system colour (system_colors.names) in any case, and a shape's name stands for its pattern. Every other entry is a value matched exactly.",
+    "shapes": {
+      "VAR_SEQ": {
+        "pattern": "^(?:var\\(--[a-z0-9-]+\\)|0)(?:\\s+(?:var\\(--[a-z0-9-]+\\)|0))*$",
+        "means": "One or more var(--token) references, whitespace-separated, and nothing else but 0, which is on every length scale (zero): `0 var(--pad-card)` is allowed and `var(--pad-card) 2px` is refused. Names are kebab-case: var(--padCard) is a typo, and a var() that names no token drops its declaration in silence."
+      },
+      "VAR_ONE": {
+        "pattern": "^var\\(--[a-z0-9-]+(\\s*,\\s*.+)?\\)$",
+        "means": "Exactly one token, with or without a fallback, which is not checked (var_fallback). For the properties where a sequence means nothing: font-size, z-index, line-height."
+      },
+      "VAR_CALC": {
+        "pattern": "^calc\\(\\s*var\\(--[a-z0-9-]+\\)\\s*[-+]\\s*var\\(--[a-z0-9-]+\\)\\s*\\)$",
+        "means": "A token plus or minus a token, for the nested-radius rule: inner radius = outer radius - inner padding. No bare number and no factor: calc(var(--space-4) * 1.5) invents a step between steps, Law 3's prohibition inside a calc(). Density scales by multiplying, once, in tokens.css, where it is a system decision."
+      },
+      "CANCEL": {
+        "pattern": "^calc\\(\\s*(?:var\\(--[a-z0-9-]+\\)\\s*\\*\\s*-1|-1\\s*\\*\\s*var\\(--[a-z0-9-]+\\))\\s*\\)$",
+        "means": "A margin that cancels a known token, Law 2's third exception (margins_in_components). Only -1: any other factor invents a step."
+      },
+      "ALIGN": {
+        "pattern": "^(?:0|auto)(?:\\s+(?:0|auto)){0,3}$",
+        "means": "A margin that aligns and spaces nothing: one to four 0s and autos. `0 auto` centres, `0 0 0 auto` pushes to the end. A token beside an auto spaces the box, so it is not alignment."
+      },
+      "STROKE": {
+        "pattern": "^(?:var\\(--[a-z0-9-]+\\)|0|none|solid|dashed|dotted|double|currentColor|currentcolor|transparent)(?:\\s+(?:var\\(--[a-z0-9-]+\\)|0|none|solid|dashed|dotted|double|currentColor|currentcolor|transparent))*$",
+        "means": "A border or outline shorthand: tokens (a --stroke-* width, a colour role), 0, a style keyword and the colour words currentColor and transparent, so `1px solid var(--border-default)` and `var(--stroke-default) solid #ddd` are refused. A system colour goes in border-color or outline-color, inside forced-colors (system_colors)."
+      },
+      "MOTION_LIST": {
+        "pattern": "^(?:(?:var\\(--[a-z0-9-]+\\)|0s|\\d+|(?!(?:ease(?:-in|-out|-in-out)?|linear|step-start|step-end)(?![\\w-]))[a-z_-][a-z0-9_-]*)(?:\\s*,\\s*|\\s+))*(?:var\\(--[a-z0-9-]+\\)|0s|\\d+|(?!(?:ease(?:-in|-out|-in-out)?|linear|step-start|step-end)(?![\\w-]))[a-z_-][a-z0-9_-]*)$",
+        "means": "A transition or animation shorthand: a comma-separated list of items, each a property or keyframe name and keywords (allow-discrete, infinite, both, none, …), tokens, 0s and an iteration count. Names are lowercase kebab-case, so no spelling of an easing keyword (EASE-IN, Linear) passes as a name. The timing comes from tokens, so a time (200ms), a curve (cubic-bezier(), steps()) and an easing keyword (ease-in, linear) are refused: `translate var(--motion-expand), display var(--motion-expand) allow-discrete` is allowed."
+      },
+      "BREAKPOINT": {
+        "pattern": "^\\d+(?:\\.\\d+)?rem$",
+        "means": "A breakpoint in rem, the one literal length a theme binding takes (bindings)."
+      },
+      "RATIO": {
+        "pattern": "^\\d+(?:\\.\\d+)?\\s*/\\s*\\d+(?:\\.\\d+)?$",
+        "means": "An aspect ratio such as `16 / 9`, a container format rather than a design value (bindings)."
+      }
+    },
+    "keywords": ["inherit", "initial", "unset", "revert", "revert-layer"],
+    "colour_words": ["currentcolor", "transparent"],
+    "colour_functions": ["rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix", "light-dark"],
+    "colour_functions_rule": "A colour written as one of these functions is a literal, unless a token decides it: a function with a var() among its arguments, as in oklch(from var(--x) l c h / 0.5) or color-mix(in oklch, var(--bg-accent) 20%, transparent), is derived. A mix of literals is a literal. A var() fallback is not checked (var_fallback). The audit (raw-color), stylelint (design/no-literal-colour-function, in every property) and ESLint (inline styles) read this list; token files are exempt.",
+    "families": {
+      "spacing": {
+        "laws": "1, 3, 6",
+        "why": "Spacing is the scale or nothing. 0 is on the scale and is spelled 0 (zero), alone or among tokens. gap is the one sanctioned way to space siblings (Law 2), so it takes the scale too, and so does a margin outside a component, in a layout or base file; in a component, margins_in_components holds it to Law 2. A share of the container (calc(100% - var(--gutter-page)), 5%) is not a spacing step: a layout primitive carries it in a socket. `layout` holds examples written in a layout file, where a margin may take a token.",
+        "allow": [
+          {"properties": ["padding", "padding-inline", "padding-block"], "values": ["VAR_SEQ", "VAR_CALC", "0", "KEYWORDS"]},
+          {"properties": ["padding-top", "padding-right", "padding-bottom", "padding-left", "padding-inline-start",
+                          "padding-inline-end", "padding-block-start", "padding-block-end"],
+           "values": ["VAR_ONE", "VAR_CALC", "0", "KEYWORDS"]},
+          {"properties": ["gap", "grid-gap"], "values": ["VAR_SEQ", "0", "KEYWORDS"]},
+          {"properties": ["row-gap", "column-gap"], "values": ["VAR_ONE", "0", "KEYWORDS"]},
+          {"properties": ["margin", "margin-inline", "margin-block"], "values": ["VAR_SEQ", "VAR_CALC", "CANCEL", "ALIGN", "KEYWORDS"]},
+          {"properties": ["margin-top", "margin-right", "margin-bottom", "margin-left", "margin-inline-start",
+                          "margin-inline-end", "margin-block-start", "margin-block-end"],
+           "values": ["VAR_ONE", "VAR_CALC", "CANCEL", "0", "auto", "KEYWORDS"]}
+        ],
+        "allowed": ["padding: var(--pad-card) var(--pad-card-lg)", "padding-inline: 0", "gap: var(--gap-related)",
+                    "padding-block-start: calc(var(--pad-card) - var(--stroke-hairline))",
+                    "padding-top: var(--pad-card, calc(1rem / 2))", "padding: 0 var(--pad-card)",
+                    "gap: 0 var(--gap-related)"],
+        "refused": ["padding: 13px", "padding: var(--pad-card) 2px", "gap: 1rem", "padding: calc(var(--space-4) * 1.5)",
+                    "padding: calc(var(--pad-card) * 1.5)", "gap: calc(var(--gap-related) * 3)",
+                    "padding-inline: calc(var(--pad-card) / 2)", "padding-inline: calc(100% - var(--gutter-page))",
+                    "padding-inline: 5%", "padding: 0px var(--pad-card)"],
+        "layout": {
+          "allowed": ["margin-block-start: var(--space-section)", "margin: 0 auto", "margin-inline: auto",
+                      "margin-inline-start: calc(var(--space-0-5) * -1)", "margin: var(--space-section) 0"],
+          "refused": ["margin-block-start: 24px", "margin-block: var(--space-section) 13px",
+                      "margin-inline: calc(var(--gap-related) * 2)", "margin-inline: calc(50% - var(--gutter-page))"]
+        }
+      },
+      "type": {
+        "laws": "1, 3",
+        "why": "No em, no %, no bare 1.4: size and leading are the values every project drifts on first. The one em is font-size: 1em, which sizes an icon to the text beside it. line-height takes no literal 1, though --leading-none is 1: the literal teaches the next person that the scale is optional. The font shorthand is how the --type-* roles are read, four values in one declaration that cannot half-apply.",
+        "allow": [
+          {"properties": ["font-size"], "values": ["VAR_ONE", "1em", "KEYWORDS"]},
+          {"properties": ["line-height", "font-weight", "font-family", "font"], "values": ["VAR_ONE", "KEYWORDS"]},
+          {"properties": ["letter-spacing"], "values": ["VAR_ONE", "normal", "KEYWORDS"]}
+        ],
+        "allowed": ["font: var(--type-body)", "letter-spacing: normal", "font-weight: var(--weight-semibold)",
+                    "font-size: 1em"],
+        "refused": ["font-size: 18px", "font-size: 1.125rem", "font-size: 0.75em", "letter-spacing: 0.05em"]
+      },
+      "radius": {
+        "laws": "1",
+        "why": "50% is the one exception: a circle is geometry, not a design value, and --radius-full (9999px) makes a pill, not a circle, on a box that is not square.",
+        "allow": [
+          {"properties": ["border-radius"], "values": ["VAR_SEQ", "VAR_CALC", "0", "50%", "KEYWORDS"]},
+          {"properties": ["border-start-start-radius", "border-start-end-radius", "border-end-start-radius",
+                          "border-end-end-radius"],
+           "values": ["VAR_ONE", "VAR_CALC", "0", "KEYWORDS"]}
+        ],
+        "allowed": ["border-radius: 50%", "border-radius: var(--radius-md)",
+                    "border-start-start-radius: calc(var(--radius-lg) - var(--pad-card))",
+                    "border-radius: var(--radius-md) var(--radius-md) 0 0"],
+        "refused": ["border-radius: 6px"]
+      },
+      "stroke": {
+        "laws": "1",
+        "why": "Line weights are tokens: --stroke-hairline, --stroke-default, --stroke-thick and --stroke-focus are the system's whole set, and forced-colors mode repaints each one. A hand-typed 1px drifts to 1.5px and 3px within a few commits, and thin, medium and thick are the browser's weights, not the system's. A border or outline shorthand takes the tokens, a style keyword and a colour token (STROKE). outline-offset may cancel a token, to draw a ring inside the edge.",
+        "allow": [
+          {"properties": ["border-width", "border-block-width", "border-inline-width"], "values": ["VAR_SEQ", "0", "KEYWORDS"]},
+          {"properties": ["border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+                          "border-block-start-width", "border-block-end-width", "border-inline-start-width",
+                          "border-inline-end-width", "outline-width"],
+           "values": ["VAR_ONE", "0", "KEYWORDS"]},
+          {"properties": ["outline-offset"], "values": ["VAR_ONE", "CANCEL", "0", "KEYWORDS"]},
+          {"properties": ["border", "border-top", "border-right", "border-bottom", "border-left", "border-block",
+                          "border-block-start", "border-block-end", "border-inline", "border-inline-start",
+                          "border-inline-end", "outline"],
+           "values": ["STROKE", "KEYWORDS"]}
+        ],
+        "allowed": ["border: var(--stroke-hairline) solid var(--border-default)", "outline: var(--stroke-focus) solid transparent",
+                    "border-block-end-width: var(--stroke-thick)", "border: 0", "outline: none",
+                    "border-inline-start: var(--stroke-thick) dashed currentColor",
+                    "outline-offset: calc(var(--stroke-focus) * -1)", "border-width: 0 0 var(--stroke-hairline)"],
+        "refused": ["border: 1px solid var(--border-default)", "border-inline-start: 3px solid var(--border-accent)",
+                    "outline-width: 2px", "outline-offset: 2px", "border: thin solid var(--border-default)",
+                    "border-width: var(--stroke-default) 2px", "outline-offset: calc(var(--stroke-focus) * -2)"]
+      },
+      "elevation": {
+        "laws": "1, 6",
+        "why": "Read --elevation-card, not --shadow-sm. A hand-written shadow is one layer and reads as a sticker; the tokens are physically consistent pairs, contact and ambient.",
+        "allow": [{"properties": ["box-shadow"], "values": ["VAR_ONE", "none", "KEYWORDS"]}],
+        "allowed": ["box-shadow: var(--elevation-card)", "box-shadow: none"],
+        "refused": ["box-shadow: 0 2px 8px var(--border-default)"]
+      },
+      "colour": {
+        "laws": "1, 6",
+        "why": "currentColor and transparent are keywords, not colours, and the system colours belong to forced-colors mode (system_colors). No hex, no rgb(), no oklch(), not even a temporary one: a literal colour in a component is the one thing dark mode cannot follow.",
+        "allow": [
+          {"properties": ["color", "background-color", "outline-color", "text-decoration-color"],
+           "values": ["VAR_ONE", "COLOUR_WORDS", "KEYWORDS"]},
+          {"properties": ["border-color"], "values": ["VAR_SEQ", "COLOUR_WORDS", "KEYWORDS"]},
+          {"properties": ["fill", "stroke"], "values": ["VAR_ONE", "COLOUR_WORDS", "none", "KEYWORDS"]},
+          {"properties": ["accent-color"], "values": ["VAR_ONE", "auto", "KEYWORDS"]}
+        ],
+        "allowed": ["color: var(--fg-strong)", "color: currentColor", "background-color: transparent", "fill: none",
+                    "border-color: var(--border-default) var(--border-accent)", "background: var(--bg-surface)",
+                    "background: linear-gradient(var(--bg-surface), var(--bg-sunken))",
+                    "background: oklch(from var(--bg-accent) l c h / 0.5)",
+                    "background: color-mix(in oklch, var(--bg-accent) 20%, transparent)"],
+        "refused": ["color: #333333", "background-color: rgb(0 0 0)", "color: oklch(50% 0.1 250)", "color: red",
+                    "background: oklch(98% 0.01 250)", "background: linear-gradient(var(--bg-surface), lab(98% 0 0))",
+                    "background: light-dark(oklch(98% 0.01 250), oklch(20% 0.01 250))",
+                    "background: color-mix(in oklch, var(--bg-accent, oklch(50% 0.1 250)) 20%, oklch(98% 0.01 250))"]
+      },
+      "stacking": {
+        "laws": "3",
+        "why": "The z-index ladder in tokens.css is closed and ordered by what occupies each rung. z-index: 9999 is not a value but a surrender, and the next person writes 10000.",
+        "allow": [{"properties": ["z-index"], "values": ["VAR_ONE", "0", "auto", "KEYWORDS"]}],
+        "allowed": ["z-index: var(--z-modal)", "z-index: auto"],
+        "refused": ["z-index: 9999"]
+      },
+      "motion": {
+        "laws": "1",
+        "why": "Duration and easing are role-paired in tokens.css: they travel together or they drift. 0s switches one transition off among several. tokens.css collapses every duration token to 1ms under prefers-reduced-motion, so a literal 200ms opts the component out: a vestibular-safety failure, not a style nit. An easing keyword (ease-in, linear) is a curve chosen by hand, as cubic-bezier() is. A scroll-driven animation's duration is auto: its timeline owns it.",
+        "allow": [
+          {"properties": ["transition-duration"], "values": ["VAR_SEQ", "0s", "KEYWORDS"]},
+          {"properties": ["animation-duration"], "values": ["VAR_SEQ", "0s", "auto", "KEYWORDS"]},
+          {"properties": ["transition-timing-function", "animation-timing-function"], "values": ["VAR_SEQ", "KEYWORDS"]},
+          {"properties": ["transition", "animation"], "values": ["MOTION_LIST", "KEYWORDS"]}
+        ],
+        "allowed": ["transition-duration: 0s", "transition: none", "animation-duration: auto",
+                    "transition: opacity var(--motion-enter), display var(--motion-enter) allow-discrete",
+                    "animation: rise var(--motion-enter) both", "animation: shimmer var(--motion-loop) infinite"],
+        "refused": ["transition-duration: 200ms", "transition-timing-function: cubic-bezier(0.2, 0, 0, 1)",
+                    "transition-timing-function: ease-in-out", "transition: opacity 200ms",
+                    "transition: opacity var(--motion-enter), transform var(--motion-enter) ease-in",
+                    "animation: spin 1s linear infinite", "animation: grow auto linear",
+                    "transition: opacity var(--motion-enter) EASE-IN", "animation: spin var(--motion-loop) Linear infinite"]
+      },
+      "sizing": {
+        "laws": "1",
+        "why": "Line length is a spacing decision: max-inline-size: 65ch in a component is the same mistake as padding: 13px, and the one people defend hardest. So are the sizes of things: a box takes a token (--tap-min, a measure, a socket), 100%, auto or an intrinsic keyword, and 1em sizes an icon to its text. The page shell may use the small and dynamic viewport units in the block axis: 100svb does not jump when mobile browser chrome hides. A size derived from tokens, calc(100% - var(--gutter-page) * 2), is geometry: it goes in a socket the property reads, as the starter's layout.css does.",
+        "allow": [
+          {"properties": ["max-inline-size", "max-width"],
+           "values": ["VAR_ONE", "none", "100%", "max-content", "min-content", "fit-content", "KEYWORDS"]},
+          {"properties": ["max-block-size", "max-height"],
+           "values": ["VAR_ONE", "none", "100%", "100dvh", "100dvb", "100svh", "100svb", "max-content", "min-content",
+                      "fit-content", "KEYWORDS"]},
+          {"properties": ["min-block-size", "min-height"],
+           "values": ["VAR_ONE", "0", "100%", "100dvh", "100dvb", "100svh", "100svb", "auto", "KEYWORDS"]},
+          {"properties": ["min-inline-size", "min-width"],
+           "values": ["VAR_ONE", "0", "100%", "auto", "max-content", "min-content", "fit-content", "KEYWORDS"]},
+          {"properties": ["inline-size", "width"],
+           "values": ["VAR_ONE", "0", "100%", "auto", "max-content", "min-content", "fit-content", "1em", "KEYWORDS"]},
+          {"properties": ["block-size", "height"],
+           "values": ["VAR_ONE", "0", "100%", "100dvh", "100dvb", "100svh", "100svb", "auto", "max-content",
+                      "min-content", "fit-content", "1em", "KEYWORDS"]}
+        ],
+        "allowed": ["max-inline-size: var(--measure-prose)", "min-block-size: 100svb", "max-width: 100%",
+                    "inline-size: 1em", "block-size: 100dvh", "width: 100%", "height: auto",
+                    "min-height: var(--tap-min)", "max-block-size: none", "inline-size: var(--drawer-size)"],
+        "refused": ["max-width: 600px", "max-inline-size: 65ch", "inline-size: 320px", "height: 48px",
+                    "width: 50vw", "max-block-size: calc(100dvh - var(--gap-distinct) * 2)", "min-width: 12rem"]
+      }
+    }
+  },
+  "inline_styles": {
+    "gates": ["audit", "eslint"],
+    "rule": "Law 4: the style prop is a second home for a component's styles, where no stylesheet, theme, media query or audit reaches. Its one legal use passes a value only the runtime knows into CSS as a custom property; a design literal there is Law 1 coming back through that exception. A design literal is a string holding a number with one of `literal_units`, a hex, or a colour function (values.colour_functions).",
+    "literal_units": ["px", "rem", "em", "ch", "ex", "vw", "vh", "vmin", "vmax", "cqi", "cqb", "cqw", "cqh", "cqmin", "cqmax", "%", "deg", "s", "ms"],
+    "allowed": ["<div style={{ '--progress': pct }} />", "<div style={span ? { '--card-span': span } : undefined} />"],
+    "refused": ["<div style={{ padding: 13 }} />", "<div style={{ '--gap': '12px' }} />",
+                "<div style={{ '--tint': 'hwb(20 10% 30%)' }} />",
+                "<div style={{ '--title': '4cqi' }} />"],
+    "bound": {
+      "gates": ["audit"],
+      "rule": "A framework's bound style is the style prop under another name (N48), held to the same rule: Vue's :style and v-bind:style (with .prop, .attr or .camel) take an object, an array of objects or a string; Angular's [style] takes an object or a string, [ngStyle] an object whose keys may name a unit ('max-width.px'), [attr.style] a string, and [style.x] and [style.x.unit] one property; Svelte's style:x directive sets one property, to a value written out (\"#fff\"), an expression ({accent}) or the variable of its name (style:color), with or without |important. The audit reads each object the expression can evaluate to (either arm of a ternary, an array's items, a spread's), and each string as it reads style=\"\": a visual property is Law 4, and a custom property's written-out design literal, or a Tier-1 primitive it reads, is Law 1 or Law 6, as in JSX. ESLint parses no .vue, .svelte or Angular template, so the audit alone reads these (N49, decided: the templates are the audit's, as stack-frameworks.md says). The migration census counts each written-out value as an inline style, left to hand work.",
+      "allowed": {
+        "vue": ["<div :style=\"{ '--progress': pct }\"></div>",
+                "<div v-bind:style=\"span ? { '--card-span': span } : undefined\"></div>",
+                "<div :style=\"[base, { '--card-tint': 'var(--bg-accent)' }]\"></div>",
+                "<div :style=\"'--progress: 40%'\"></div>"],
+        "svelte": ["<div style:--progress={pct}></div>", "<div style:--progress=\"{pct}%\"></div>",
+                   "<div style:--card-tint=\"var(--bg-accent)\"></div>"],
+        "angular": ["<div [ngStyle]=\"{ '--progress': pct }\"></div>",
+                    "<div [style]=\"{ '--card-tint': 'var(--bg-accent)' }\"></div>"]
+      },
+      "refused": {
+        "vue": ["<div :style=\"{ color: '#fff' }\"></div>", "<div :style=\"{ color: 'var(--fg-strong)' }\"></div>",
+                "<div v-bind:style=\"{ '--gap': '12px' }\"></div>",
+                "<div v-bind:style.prop=\"[base, on && { padding: '12px' }]\"></div>",
+                "<div :style=\"'color: #fff'\"></div>", "<div :style=\"{ '--tint': 'var(--neutral-700)' }\"></div>"],
+        "svelte": ["<div style:color=\"#fff\"></div>", "<div style:color={accent}></div>", "<div style:color></div>",
+                   "<div style:color|important=\"#fff\"></div>", "<div style:--gap=\"12px\"></div>"],
+        "angular": ["<div [style.color]=\"'#fff'\"></div>", "<div [style.width.px]=\"13\"></div>",
+                    "<div [style]=\"'color: #fff'\"></div>", "<div [ngStyle]=\"{ 'max-width.px': 20 }\"></div>",
+                    "<div [attr.style]=\"'color: #fff'\"></div>", "<div [ngStyle]=\"{ '--gap': '12px' }\"></div>"]
+      }
+    }
+  },
+  "tailwind_arbitrary": {
+    "gates": ["audit", "eslint"],
+    "rule": "Law 1 in a class: a Tailwind arbitrary value (`p-[17px]`, `bg-[#e8440a]`) is a literal off the scale. Two are not design values and pass: an image's `url()` (`bg-[url(…)]`, `mask-[url(…)]`) and a pseudo-element's content string (`content-['…']`). An arbitrary variant (`data-[state=open]:`, `aria-[expanded=true]:`, `group-[.open]:`) selects a state and carries no value.",
+    "allowed": ["<div className=\"bg-[url(/hero.jpg)] bg-cover\" />", "<span className=\"before:content-['→']\" />",
+                "<div className=\"mask-[url(/fade.svg)]\" />", "<div className=\"data-[state=open]:bg-surface\" />"],
+    "refused": ["<div className=\"p-[17px]\" />", "<div className=\"bg-[#e8440a]\" />",
+                "<div className=\"bg-[url(/noise.png),linear-gradient(13deg,var(--bg-surface),var(--bg-accent))]\" />"]
+  },
+  "bindings": {
+    "gates": ["audit", "stylelint"],
+    "rule": "A theme file (file_classes.binding_files, Tailwind v4's theme.css) binds Tailwind's theme to the tokens and decides nothing (theme.css §0): a custom property there takes a token, currentColor, transparent or a CSS-wide keyword. Each prefix with a rule of its own answers to that rule alone, so the colour words never reach a breakpoint, a ratio or an animation. Two literals are allowed, each because of CSS: a breakpoint in rem, which must be a literal and never a var(), because a media query condition cannot read a custom property, and an aspect ratio, a container format. A breakpoint may also be a CSS-wide keyword: `--breakpoint-*: initial` clears Tailwind's own, and `--breakpoint-2xl: initial` one of them. An --animate-* binding is an animation shorthand, so it takes the motion tokens (MOTION_LIST). Keyframe geometry, §0's third exception, is not a custom property. Only custom properties are held to this: the theme file's other rules (its @utility blocks, its keyframes) answer to the gates' other rules. stylelint's theme-file override reads BINDING_ALLOWLIST, and the audit, for which a theme file is a token file, checks its custom properties against BINDING_VALUES (L1 binding-literal).",
+    "allow": [
+      {"properties": ["/^--breakpoint-/"], "values": ["BREAKPOINT", "KEYWORDS"]},
+      {"properties": ["/^--aspect-/"], "values": ["RATIO", "VAR_ONE", "KEYWORDS"]},
+      {"properties": ["/^--animate-/"], "values": ["MOTION_LIST"]},
+      {"properties": ["/^--(?!breakpoint-|aspect-|animate-)/"], "values": ["VAR_ONE", "COLOUR_WORDS", "KEYWORDS"]}
+    ],
+    "allowed": ["--breakpoint-md: 48rem", "--breakpoint-*: initial", "--breakpoint-2xl: initial",
+                "--aspect-video: 16 / 9", "--color-current: currentColor",
+                "--color-bg-surface: var(--bg-surface)", "--*: initial", "--spacing-card: var(--pad-card)",
+                "--animate-spin: spin var(--motion-loop) infinite"],
+    "refused": ["--spacing-card: 28px", "--color-brand: oklch(64.5% 0.188 42)", "--animate-spin: spin 1s linear infinite",
+                "--breakpoint-md: var(--bp-md)", "--radius-card: calc(var(--radius-md) * 2)",
+                "--aspect-video: currentColor", "--animate-spin: currentColor"]
+  },
+  "file_classes": {
+    "binding_files": {
+      "globs": ["**/theme.css", "**/*-theme.css"],
+      "about": "Theme files bind a framework's theme to the tokens (bindings). Each is also a token file: the audit and the migration tool leave its literals to this rule.",
+      "examples": ["assets/configs/theme.css", "dark-theme.css", "src/styles/theme.css"],
+      "not": ["theming.css", "src/styles/tokens.css", "mytheme.css", "theme.scss.bak", "src/styles/theme.scss"]
+    },
+    "token_files": {
+      "globs": ["**/tokens.css", "**/*-tokens.css", "**/*.tokens.css", "**/tokens/*.css", "**/theme.css", "**/*-theme.css",
+                "**/tokens.scss", "**/*-tokens.scss", "**/*.tokens.scss", "**/tokens/*.scss", "**/theme.scss", "**/*-theme.scss"],
+      "examples": ["src/styles/tokens.css", "brand-tokens.css", "design.tokens.css", "src/tokens/colour.css", "assets/configs/theme.css", "dark-theme.css",
+                   "src/styles/tokens.scss", "brand-tokens.scss", "src/tokens/colour.scss", "src/styles/theme.scss"],
+      "not": ["mytokens.css", "src/components/card.css", "theming.css", "token.css", "brand-token.css", "mytokens.scss", "src/components/card.scss"]
+    },
+    "component_files": {
+      "globs": ["**/components/**/*.css", "**/ui/**/*.css", "**/*.module.css", "**/components.css",
+                "**/components/**/*.scss", "**/ui/**/*.scss", "**/*.module.scss", "**/components.scss"],
+      "examples": ["src/components/card.css", "packages/ui/button.css", "Card.module.css", "styles/components.css",
+                   "src/components/layout/header.css", "packages/ui/layout.css", "components/card.css", "ui/button.css",
+                   "src/components/card.scss", "Button.module.scss", "packages/ui/_button.scss", "styles/components.scss"],
+      "not": ["src/styles/layout.css", "src/styles/base.css", "mycomponents.css", "src/styles/_mixins.scss", "mycomponents.scss"]
+    }
+  }
+}

@@ -1,0 +1,804 @@
+"""What figma_to_tokens.py and figma_audit.py share: one reader for every shape
+of Figma export, and the colour and value helpers it needs.
+
+Not a command. Both scripts import it, so the converter and the audit read a
+file the same way by construction: the same variables, collections, modes and
+types. Copied apart, the two readers drifted (LC-C3): the audit split a records
+export's modes into one variable each, which figma_to_tokens had stopped doing.
+
+Dependency-free (Python 3.9+, stdlib only), like dtcg.py beside it.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+
+sys.dont_write_bytecode = True
+try:                                              # python -m scripts.<script>
+    from . import dtcg                            # type: ignore[import-not-found]
+except ImportError:                               # python scripts/<script>.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dtcg                                   # type: ignore[no-redef]
+
+__all__ = [
+    "dtcg",
+    "out_of_srgb",
+    "left_out",
+    "PX_PER_REM",
+    "srgb_to_linear",
+    "linear_to_srgb",
+    "linear_srgb_to_oklab",
+    "oklab_to_linear_srgb",
+    "oklch_to_oklab",
+    "oklch_to_rgb",
+    "rgb_to_hex",
+    "as_color",
+    "as_px",
+    "as_ms",
+    "as_alias",
+    "TIER_PREFIXES",
+    "slugify",
+    "FVar",
+    "FCollection",
+    "FDoc",
+    "detect_shape",
+    "parse_rest",
+    "parse_plugin",
+    "parse_records",
+    "dtcg_type",
+    "parse_dtcg",
+    "load_document",
+    "attach_styles",
+    "PLAN_MODES",
+    "REST_MODES",
+    "plan_limit",
+]
+
+
+# ===========================================================================
+# Each Figma plan's modes per collection (P32; LC-B6), re-read on 2026-10-11.
+# Figma's plan comparison: "Up to 10 modes per collection" (Professional), "Up
+# to 20 modes per collection" (Organization), "Unlimited modes with extended
+# collections" (Enterprise); the REST variables page: "Each collection can have
+# a maximum of 40 modes". Starter has no row: "Anyone on Education,
+# Professional, Organization, and Enterprise plans can create and use modes for
+# variables" (Modes for variables), so a collection keeps its first mode only.
+# The Plugin API's addMode "is limited by the current file's pricing tier".
+# ===========================================================================
+
+PLAN_MODES = {"starter": 1, "professional": 10, "organization": 20, "enterprise": 40}
+REST_MODES = 40
+
+
+def plan_limit(plan: str) -> str:
+    """Why `plan` caps a collection's modes where it does, for a finding."""
+    if plan == "starter":
+        return ("Starter has no modes beyond a collection's first: Figma gives modes to the "
+                "Education, Professional, Organization and Enterprise plans.")
+    if plan == "enterprise":
+        return ("Enterprise allows 40 modes per collection, the REST API's limit; an extended "
+                "collection gives a brand modes of its own.")
+    return f"{plan.title()} allows {PLAN_MODES[plan]} modes per collection."
+
+
+# ===========================================================================
+# Colour maths: the same matrices and transfer function as
+# web-design-studio/scripts/generate_color_ramp.py.
+# ===========================================================================
+
+PX_PER_REM = 16.0
+
+
+def srgb_to_linear(c: float) -> float:
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def linear_to_srgb(c: float) -> float:
+    return c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+
+
+def linear_srgb_to_oklab(r: float, g: float, b: float) -> Tuple[float, float, float]:
+    l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    l_ = math.copysign(abs(l) ** (1 / 3), l)
+    m_ = math.copysign(abs(m) ** (1 / 3), m)
+    s_ = math.copysign(abs(s) ** (1 / 3), s)
+    return (
+        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+    )
+
+
+def oklab_to_linear_srgb(L: float, a: float, b: float) -> Tuple[float, float, float]:
+    l_ = L + 0.3963377774 * a + 0.2158037573 * b
+    m_ = L - 0.1055613458 * a - 0.0638541728 * b
+    s_ = L - 0.0894841775 * a - 1.2914855480 * b
+    l, m, s = l_ ** 3, m_ ** 3, s_ ** 3
+    return (
+        +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    )
+
+
+def oklch_to_oklab(L: float, C: float, H: float) -> Tuple[float, float, float]:
+    rad = math.radians(H)
+    return (L, C * math.cos(rad), C * math.sin(rad))
+
+
+def oklch_to_rgb(L_pct: float, C: float, H: float) -> Tuple[float, float, float]:
+    """OKLCH (L in percent) -> sRGB 0..1, clamped to gamut."""
+    lr, lg, lb = oklab_to_linear_srgb(*oklch_to_oklab(L_pct / 100.0, C, H))
+    return tuple(min(1.0, max(0.0, linear_to_srgb(c))) for c in (lr, lg, lb))  # type: ignore
+
+
+def left_out(doc: "FDoc", limit: int = 20) -> str:
+    """What a document read held but could not give, one line each, for the
+    message that says it gave no variables (V12): an input whose only tokens
+    were unsupported read as a wrong shape."""
+    rows = [f"  {where}: {why}" for where, why in [*doc.unread, *doc.unsupported]]
+    more = f"\n  ... and {len(rows) - limit} more" if len(rows) > limit else ""
+    return ("\nWhat it held and could not give:\n" + "\n".join(rows[:limit]) + more) if rows else ""
+
+
+def out_of_srgb(value: Any) -> bool:
+    """Whether an `oklch()` colour lies outside sRGB, so as_color() clamps it:
+    `oklch(70% 0.3 150)` became `r 0, g 0.797, b 0` without a word (V11)."""
+    m = _OKLCH_FN.match(value.strip()) if isinstance(value, str) else None
+    if not m:
+        return False
+    parts = [p.strip() for p in re.split(r"[\s/]+", m.group(1)) if p.strip()]
+    try:
+        L = float(parts[0][:-1]) if parts[0].endswith("%") else float(parts[0]) * 100.0
+        C, H = float(parts[1]), (float(parts[2].rstrip("deg")) if len(parts) > 2 else 0.0)
+    except (ValueError, IndexError):
+        return False
+    linear = oklab_to_linear_srgb(*oklch_to_oklab(L / 100.0, C, H))
+    return any(ch < -1e-4 or ch > 1 + 1e-4 for ch in linear)
+
+
+def rgb_to_hex(r: float, g: float, b: float) -> str:
+    return "#" + "".join(f"{round(min(1.0, max(0.0, c)) * 255):02x}" for c in (r, g, b))
+
+
+# ===========================================================================
+# Values. Figma hands you numbers; plugins hand you strings; DTCG hands you
+# strings with units. All three have to arrive here as the same thing.
+# ===========================================================================
+
+_HEX = re.compile(r"^#?([0-9a-fA-F]{3,8})$")
+
+_RGB_FN = re.compile(r"^rgba?\(([^)]*)\)$", re.I)
+
+_OKLCH_FN = re.compile(r"^oklch\(([^)]*)\)$", re.I)
+
+_NUM_UNIT = re.compile(r"^(-?\d*\.?\d+)\s*(px|rem|em|pt|%|ms|s)?$", re.I)
+
+
+def as_color(value: Any) -> Optional[Tuple[float, float, float, float]]:
+    """Return (r, g, b, a) in 0..1, or None if this is not a colour."""
+    if isinstance(value, dict):
+        if all(k in value for k in ("r", "g", "b")):
+            try:
+                return (float(value["r"]), float(value["g"]), float(value["b"]),
+                        float(value.get("a", 1.0)))
+            except (TypeError, ValueError):
+                return None
+        # VariableComposedColor (Sept 2026): colour and opacity authored apart.
+        # Figma gives `opacity` as a PERCENTAGE, 0-100; read as 0-1, every
+        # translucent hover and scrim was audited as opaque.
+        if "color" in value:
+            base = as_color(value["color"])
+            if base is None:
+                return None
+            if isinstance(value.get("opacity"), (int, float)):
+                return (base[0], base[1], base[2], base[3] * float(value["opacity"]) / 100.0)
+            if isinstance(value.get("alpha"), (int, float)):
+                return (base[0], base[1], base[2], float(value["alpha"]))
+            return base                      # an alias in the opacity channel
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    m = _HEX.match(raw)
+    if m and raw.startswith("#"):
+        h = m.group(1)
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        elif len(h) == 4:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6:
+            h += "ff"
+        if len(h) != 8:
+            return None
+        v = [int(h[i:i + 2], 16) / 255.0 for i in range(0, 8, 2)]
+        return (v[0], v[1], v[2], v[3])
+    m = _RGB_FN.match(raw)
+    if m:
+        parts = [p.strip() for p in re.split(r"[,\s/]+", m.group(1)) if p.strip()]
+        try:
+            chans = []
+            for p in parts[:3]:
+                chans.append(float(p[:-1]) / 100.0 if p.endswith("%") else float(p) / 255.0)
+            alpha = 1.0
+            if len(parts) > 3:
+                a = parts[3]
+                alpha = float(a[:-1]) / 100.0 if a.endswith("%") else float(a)
+            return (chans[0], chans[1], chans[2], alpha)
+        except (ValueError, IndexError):
+            return None
+    m = _OKLCH_FN.match(raw)
+    if m:
+        parts = [p.strip() for p in re.split(r"[\s/]+", m.group(1)) if p.strip()]
+        try:
+            L = float(parts[0][:-1]) if parts[0].endswith("%") else float(parts[0]) * 100.0
+            C = float(parts[1])
+            H = float(parts[2].rstrip("deg")) if len(parts) > 2 else 0.0
+            alpha = 1.0
+            if len(parts) > 3:
+                a = parts[3]
+                alpha = float(a[:-1]) / 100.0 if a.endswith("%") else float(a)
+            r, g, b = oklch_to_rgb(L, C, H)
+            return (r, g, b, alpha)
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def as_px(value: Any) -> Optional[float]:
+    """Return a pixel number, or None. Bare numbers are px -- that is what a
+    Figma FLOAT variable is."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    m = _NUM_UNIT.match(value.strip())
+    if not m:
+        return None
+    n, unit = float(m.group(1)), (m.group(2) or "px").lower()
+    if unit == "px":
+        return n
+    if unit in ("rem", "em"):
+        return n * PX_PER_REM
+    if unit == "pt":
+        return n * 4.0 / 3.0
+    return None
+
+
+def as_ms(value: Any) -> Optional[float]:
+    """Return milliseconds, or None. A bare number is milliseconds."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        m = _NUM_UNIT.match(value.strip())
+        if m:
+            n, unit = float(m.group(1)), (m.group(2) or "ms").lower()
+            return n * 1000.0 if unit == "s" else n
+    return None
+
+
+def as_alias(value: Any) -> Optional[str]:
+    """Return the alias target (a variable id, or a dotted/slashed path)."""
+    if isinstance(value, dict):
+        if value.get("type") == "VARIABLE_ALIAS" and "id" in value:
+            return str(value["id"])
+        for key in ("alias", "aliasTo", "variableAlias"):
+            if key in value and isinstance(value[key], str):
+                return value[key]
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("{") and s.endswith("}"):
+            return s[1:-1]
+        if s.startswith("$") and len(s) > 1 and not s.startswith("$#"):
+            return s[1:]
+    return None
+
+
+# ===========================================================================
+# The document model, and one reader per export shape
+# ===========================================================================
+
+TIER_PREFIXES = {
+    "primitive", "primitives", "core", "global", "base", "raw", "foundation",
+    "semantic", "semantics", "alias", "aliases", "theme", "themes", "role", "roles",
+    "component", "components", "token", "tokens", "design", "ds",
+}
+
+
+def slugify(name: str) -> str:
+    """`Primitive/Space/6` -> `space-6`. Figma's `/` grouping is the same
+    grammar as `--category-role-variant`; this is the round trip."""
+    parts = [p.strip() for p in str(name).replace("\\", "/").split("/") if p.strip()]
+    while len(parts) > 1 and parts[0].strip().lower() in TIER_PREFIXES:
+        parts = parts[1:]
+    slug = "-".join(parts).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    return re.sub(r"-{2,}", "-", slug)
+
+
+@dataclass
+class FVar:
+    name: str
+    collection: str
+    resolved_type: str
+    values: Dict[str, Any] = field(default_factory=dict)   # mode name -> raw value
+    scopes: List[str] = field(default_factory=list)
+    code_syntax: Dict[str, str] = field(default_factory=dict)
+    description: str = ""
+    var_id: str = ""
+    # DTCG `$deprecated`, the token's own or a group's: true, or the reason.
+    deprecated: Union[bool, str] = False
+    # A DTCG source's own `$type` (`number`, `fontWeight`...), which says
+    # what a FLOAT is better than its name can.
+    dtcg_type: str = ""
+    # No value in its collection's default mode (a Tokens Studio token only a
+    # later theme sets): never written in `:root` (Codex on #102).
+    partial: bool = False
+
+    @property
+    def slug(self) -> str:
+        return slugify(self.name)
+
+    @property
+    def described(self) -> str:
+        """The description, with a note when the token is deprecated."""
+        if not self.deprecated:
+            return self.description
+        note = "deprecated" + (f": {self.deprecated}" if isinstance(self.deprecated, str) else "")
+        return " ".join(x for x in (self.description, f"({note})") if x)
+
+
+@dataclass
+class FCollection:
+    name: str
+    modes: List[str] = field(default_factory=list)
+    default_mode: str = ""
+    # "theme" or "density" when the source says which (a resolver's modifier),
+    # so a mode's selector does not rest on its name alone.
+    kind: str = ""
+
+
+@dataclass
+class FDoc:
+    shape: str
+    collections: Dict[str, FCollection] = field(default_factory=dict)
+    variables: List[FVar] = field(default_factory=list)
+    text_styles: List[dict] = field(default_factory=list)
+    effect_styles: List[dict] = field(default_factory=list)
+    by_id: Dict[str, FVar] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
+    # (token path, why) for DTCG values this script cannot read; each one is a
+    # finding, because an unaudited token must never look like a clean one.
+    unsupported: List[Tuple[str, str]] = field(default_factory=list)
+    # (where, why) for a resolver's sources that could not be read (a missing
+    # file, a URL, a cycle of sets): each one is a finding too.
+    unread: List[Tuple[str, str]] = field(default_factory=list)
+
+
+def _is_leaf_token(node: Any) -> bool:
+    return isinstance(node, dict) and ("$value" in node or "value" in node)
+
+
+def detect_shape(data: Any) -> str:
+    if isinstance(data, list):
+        return "records"
+    if not isinstance(data, dict):
+        raise ValueError("top level of the file is neither an object nor an array")
+    meta = data.get("meta")
+    if isinstance(meta, dict) and ("variables" in meta or "variableCollections" in meta):
+        return "rest"
+    if isinstance(data.get("collections"), list):
+        return "plugin"
+    if isinstance(data.get("variables"), list):
+        return "records"
+    if isinstance(data.get("variables"), dict) and isinstance(data.get("variableCollections"), dict):
+        return "rest"
+    if dtcg.is_resolver(data):
+        return "resolver"
+    return "dtcg"
+
+
+def parse_rest(data: dict) -> FDoc:
+    meta = data.get("meta", data)
+    raw_cols = meta.get("variableCollections", {}) or {}
+    raw_vars = meta.get("variables", {}) or {}
+    doc = FDoc(shape="rest")
+    mode_names: Dict[str, Dict[str, str]] = {}      # collection id -> modeId -> name
+    col_of: Dict[str, str] = {}                      # collection id -> collection name
+    for cid, col in raw_cols.items():
+        cname = col.get("name") or cid
+        modes = col.get("modes") or []
+        names, seen = [], {}
+        for m in modes:
+            mid = m.get("modeId") or m.get("id") or ""
+            mn = m.get("name") or mid or "Mode"
+            if mn in seen:                            # duplicate mode labels happen
+                mn = f"{mn} ({mid})"
+            seen[mn] = True
+            names.append(mn)
+            mode_names.setdefault(cid, {})[mid] = mn
+        default_id = col.get("defaultModeId") or (modes[0].get("modeId") if modes else "")
+        doc.collections[cname] = FCollection(
+            name=cname, modes=names,
+            default_mode=mode_names.get(cid, {}).get(default_id, names[0] if names else "Value"),
+        )
+        col_of[cid] = cname
+    for vid, v in raw_vars.items():
+        cid = v.get("variableCollectionId", "")
+        cname = col_of.get(cid, "(unknown collection)")
+        if cname not in doc.collections:
+            doc.collections[cname] = FCollection(name=cname, modes=["Value"], default_mode="Value")
+        values: Dict[str, Any] = {}
+        for mid, val in (v.get("valuesByMode") or {}).items():
+            values[mode_names.get(cid, {}).get(mid, mid)] = val
+        fv = FVar(
+            name=v.get("name", vid), collection=cname,
+            resolved_type=(v.get("resolvedType") or "").upper(),
+            values=values, scopes=list(v.get("scopes") or []),
+            code_syntax=dict(v.get("codeSyntax") or {}),
+            description=v.get("description") or "", var_id=vid,
+        )
+        doc.variables.append(fv)
+        doc.by_id[vid] = fv
+        if v.get("key"):
+            doc.by_id.setdefault(str(v["key"]), fv)
+    return doc
+
+
+def parse_plugin(data: dict) -> FDoc:
+    """The `{"collections": [...]}` family. Two sub-shapes exist in the wild:
+    variables listed once per mode, and variables listed once with valuesByMode.
+    Both arrive here."""
+    doc = FDoc(shape="plugin")
+    for col in data.get("collections", []):
+        if not isinstance(col, dict):
+            continue
+        cname = col.get("name") or "tokens"
+        raw_modes = col.get("modes") or []
+        mode_labels: List[str] = []
+        merged: Dict[str, FVar] = {}
+        # A flat variable's valuesByMode is keyed by mode id; the collection
+        # lists modes by name. Read both as the name.
+        name_of = {str(m["modeId"]): str(m.get("name") or m["modeId"])
+                   for m in raw_modes if isinstance(m, dict) and m.get("modeId")}
+
+        def _ingest(entry: dict, mode: str) -> None:
+            if not isinstance(entry, dict) or "name" not in entry:
+                return
+            key = str(entry["name"])
+            fv = merged.get(key)
+            if fv is None:
+                fv = FVar(
+                    name=key, collection=cname,
+                    resolved_type=str(entry.get("type") or entry.get("resolvedType") or "").upper(),
+                    scopes=list(entry.get("scopes") or []),
+                    code_syntax=dict(entry.get("codeSyntax") or {}),
+                    description=entry.get("description") or "",
+                    var_id=str(entry.get("id") or key),
+                )
+                merged[key] = fv
+                doc.by_id.setdefault(fv.var_id, fv)
+                doc.by_id.setdefault(key, fv)
+            vbm = entry.get("valuesByMode")
+            if isinstance(vbm, dict):
+                for mk, mv in vbm.items():
+                    label = name_of.get(str(mk), str(mk))
+                    fv.values[label] = mv
+                    if label not in mode_labels:
+                        mode_labels.append(label)
+            elif "value" in entry or "$value" in entry:
+                fv.values[mode] = entry.get("value", entry.get("$value"))
+
+        # Sub-shape 1: modes carry their own variable lists.
+        nested = False
+        for m in raw_modes:
+            if isinstance(m, dict) and isinstance(m.get("variables"), list):
+                nested = True
+                mname = m.get("name") or m.get("modeId") or "Value"
+                if mname not in mode_labels:
+                    mode_labels.append(mname)
+                for entry in m["variables"]:
+                    _ingest(entry, mname)
+            elif isinstance(m, dict):
+                mn = m.get("name") or m.get("modeId") or "Value"
+                if mn not in mode_labels:
+                    mode_labels.append(mn)
+            elif isinstance(m, str) and m not in mode_labels:
+                mode_labels.append(m)
+        # Sub-shape 2: a flat variable list with valuesByMode.
+        if not nested:
+            for entry in col.get("variables", []) or []:
+                _ingest(entry, mode_labels[0] if mode_labels else "Value")
+        if not mode_labels:
+            mode_labels = ["Value"]
+        default = col.get("defaultMode") or col.get("defaultModeId") or mode_labels[0]
+        default = name_of.get(str(default), default)
+        if default not in mode_labels:
+            default = mode_labels[0]
+        doc.collections[cname] = FCollection(cname, mode_labels, default)
+        doc.variables.extend(merged.values())
+    return doc
+
+
+def parse_records(data: Any, collection: str) -> FDoc:
+    rows = data if isinstance(data, list) else (data.get("variables") or [])
+    doc = FDoc("records")
+    doc.collections[collection] = FCollection(collection, ["Value"], "Value")
+    # Rows are one (collection, name, mode) triple each. Like `parse_plugin`'s
+    # `_ingest`, merge rows that share (collection, name) into one FVar with a
+    # multi-mode `values` dict -- otherwise each mode becomes its own variable,
+    # and `Converter.blocks()` cannot tell "no value for :root" from "this is
+    # the only mode", so it treats every split-off variable as its own default
+    # and every mode collapses onto `:root`.
+    merged: Dict[Tuple[str, str], FVar] = {}
+    for row in rows:
+        if not isinstance(row, dict) or "name" not in row:
+            continue
+        cname = row.get("collection") or collection
+        mode = row.get("mode", "Value")
+        doc.collections.setdefault(cname, FCollection(cname, [], mode))
+        if mode not in doc.collections[cname].modes:
+            doc.collections[cname].modes.append(mode)
+        if not doc.collections[cname].default_mode:
+            doc.collections[cname].default_mode = mode
+        key = (cname, str(row["name"]))
+        fv = merged.get(key)
+        if fv is None:
+            fv = FVar(str(row["name"]), cname,
+                      str(row.get("type") or row.get("resolvedType") or "").upper(),
+                      {}, list(row.get("scopes") or []), {}, row.get("description") or "",
+                      str(row.get("id") or row["name"]))
+            merged[key] = fv
+            doc.variables.append(fv)
+            doc.by_id.setdefault(fv.var_id, fv)
+            doc.by_id.setdefault(fv.name, fv)
+        fv.values[mode] = row.get("value", row.get("$value"))
+    return doc
+
+
+def dtcg_type(declared: Optional[str], value: Any) -> str:
+    if isinstance(declared, str) and declared:   # a legacy `type: 5` is no type (S1)
+        d = declared.lower()
+        if d == "color":
+            return "COLOR"
+        if d in ("dimension", "number", "duration", "fontweight", "font-weight"):
+            return "FLOAT"
+        if d in ("fontfamily", "font-family", "string", "cubicbezier", "shadow", "typography"):
+            return "STRING"
+        if d == "boolean":
+            return "BOOLEAN"
+    if isinstance(value, bool):
+        return "BOOLEAN"
+    if as_color(value) is not None:
+        return "COLOR"
+    if as_px(value) is not None:
+        return "FLOAT"
+    return "STRING"
+
+
+def _dtcg_vars(data: dict) -> Tuple[Dict[str, dict], List[Tuple[str, str]]]:
+    """A 2025.10 tree as {"a/b": its normalised token}, in order."""
+    data, problems = dtcg.normalise(data)
+    reserved = dtcg.META_KEYS | {"$value"}
+    out: Dict[str, dict] = {}
+
+    def walk(node: Any, path: List[str]) -> None:
+        if _is_leaf_token(node):
+            out["/".join(path)] = node
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                if k == "$root":
+                    walk(v, path)
+                elif k not in reserved:
+                    walk(v, path + [str(k)])
+    walk(data, [])
+    return out, problems
+
+
+def parse_studio(data: dict) -> FDoc:
+    """A Tokens Studio export (P31 part 2). Each theme group is a collection
+    whose modes are its themes, the first the default, holding the tokens of
+    the sets its themes enable; each set no theme enables is a collection of
+    its own, with one mode. References name tokens without their set, so a
+    Light/Dark export becomes `:root` and `[data-theme="dark"]`, never
+    `--light-bg-surface`."""
+    doc = FDoc(shape="tokens-studio")
+    themes = dtcg.studio_themes(data)
+    base, doc.unsupported = dtcg.studio_document(data)
+    base_vars, problems = _dtcg_vars(base)
+    doc.unsupported += problems
+    themed: Dict[str, str] = {}                  # token -> its group's collection
+
+    def add(name: str, node: dict, collection: str, values: Dict[str, Any]) -> FVar:
+        fv = FVar(name=name, collection=collection,
+                  resolved_type=dtcg_type(node.get("$type"), node.get("$value")), values=values,
+                  description=node.get("$description") or "", var_id=name,
+                  deprecated=node.get("$deprecated") or False, dtcg_type=str(node.get("$type") or ""))
+        doc.variables.append(fv)
+        doc.by_id.setdefault(name, fv)
+        doc.by_id.setdefault(name.replace("/", "."), fv)
+        return fv
+
+    groups: Dict[str, List[Any]] = {}
+    for theme in themes:
+        groups.setdefault(theme.group or "Themes", []).append(theme)
+    for group, members in groups.items():
+        doc.collections[group] = FCollection(group, [t.name for t in members], members[0].name)
+        per_theme = {}
+        for theme in members:
+            merged, extra = dtcg.studio_document(data, theme.sets)
+            per_theme[theme.name], more = _dtcg_vars(merged)
+            doc.unsupported += [p for p in extra + more if p not in doc.unsupported]
+        # A theme's own sets: those it enables, and a source set not every theme
+        # of the group reads (a Light palette and a Dark one), whose values
+        # differ by mode (CodeRabbit on #102).
+        shared = set.intersection(*(set(t.sets) for t in members))
+        names = list(dict.fromkeys("/".join(path) for theme in members
+                                   for s in theme.enabled + [x for x in theme.sets if x not in shared]
+                                   for path in dtcg.studio_paths(data, s)))
+        for name in names:
+            if name in themed:                   # one variable, one collection (Codex on #102)
+                doc.unsupported.append((name, f"set by two theme groups, {themed[name]} and {group}: "
+                                              f"{group}'s values"))
+                continue
+            nodes = {t.name: per_theme[t.name][name] for t in members if name in per_theme[t.name]}
+            if nodes:
+                themed[name] = group
+                fv = add(name, next(iter(nodes.values())), group, {m: n["$value"] for m, n in nodes.items()})
+                fv.partial = members[0].name not in nodes
+    for set_name in dtcg.studio_sets(data):
+        doc.collections.setdefault(set_name, FCollection(set_name, ["Value"], "Value"))
+        for path in dtcg.studio_paths(data, set_name):
+            name = "/".join(path)
+            if name not in themed and name in base_vars and name not in doc.by_id:
+                add(name, base_vars[name], set_name, {"Value": base_vars[name]["$value"]})
+    for name in [c for c in doc.collections if not any(v.collection == c for v in doc.variables)]:
+        del doc.collections[name]
+    return doc
+
+
+def parse_resolver(data: dict, base: Path) -> FDoc:
+    """A DTCG resolver (P31 part 3). Each modifier is a collection whose modes
+    are its contexts, its default the default, holding the tokens its contexts
+    set; each set is a collection of its own, with one mode. A token's value in
+    a mode is the one the resolver gives for that context, the other
+    modifiers at their defaults."""
+    doc = FDoc(shape="resolver")
+    merged, doc.unread = dtcg.resolver_document(data, base)
+    base_vars, doc.unsupported = _dtcg_vars(merged)
+    themed: Dict[str, str] = {}                  # token -> its modifier
+
+    def add(name: str, node: dict, collection: str, values: Dict[str, Any]) -> FVar:
+        fv = FVar(name=name, collection=collection,
+                  resolved_type=dtcg_type(node.get("$type"), node.get("$value")), values=values,
+                  description=node.get("$description") or "", var_id=name,
+                  deprecated=node.get("$deprecated") or False, dtcg_type=str(node.get("$type") or ""))
+        doc.variables.append(fv)
+        doc.by_id.setdefault(name, fv)
+        doc.by_id.setdefault(name.replace("/", "."), fv)
+        return fv
+
+    for mod in dtcg.resolver_modifiers(data):
+        default = mod.default or mod.contexts[0]
+        kind = mod.name.lower() if mod.name.lower() in ("theme", "density") else ""
+        doc.collections[mod.name] = FCollection(mod.name, list(mod.contexts), default, kind)
+        per_context, names = {}, []
+        for context in mod.contexts:
+            tree, extra = dtcg.resolver_document(data, base, {mod.name: context})
+            per_context[context], more = _dtcg_vars(tree)
+            own, _ = dtcg.resolver_document(data, base, {mod.name: context}, only=mod.name)
+            names += ["/".join(path) for path in dtcg.token_paths(own)]
+            doc.unread += [p for p in extra if p not in doc.unread]
+            doc.unsupported += [p for p in more if p not in doc.unsupported]
+        for name in dict.fromkeys(names):
+            if name in themed:                   # one variable, one collection, as for Studio
+                doc.unsupported.append((name, f"set by two modifiers, {themed[name]} and {mod.name}: "
+                                              f"{mod.name}'s values"))
+                continue
+            nodes = {c: per_context[c][name] for c in mod.contexts if name in per_context[c]}
+            if nodes:
+                themed[name] = mod.name
+                fv = add(name, next(iter(nodes.values())), mod.name, {c: n["$value"] for c, n in nodes.items()})
+                fv.partial = default not in nodes
+    for name, node in base_vars.items():
+        if name not in themed:
+            doc.collections.setdefault("tokens", FCollection("tokens", ["Value"], "Value"))
+            add(name, node, "tokens", {"Value": node["$value"]})
+    return doc
+
+
+def parse_dtcg(data: dict, collection: str) -> FDoc:
+    if dtcg.is_studio(data):
+        return parse_studio(data)
+    doc = FDoc(shape="dtcg")
+    doc.collections[collection] = FCollection(collection, ["Value"], "Value")
+    # 2025.10 objects, $ref, $extends and group $type become the string forms
+    # the checks read; anything unreadable is kept as a finding.
+    data, doc.unsupported = dtcg.normalise(data)
+    reserved = dtcg.META_KEYS | {"$value"}
+
+    def walk(node: Any, path: List[str]) -> None:
+        if _is_leaf_token(node):
+            name = "/".join(path)
+            fv = FVar(
+                name=name, collection=collection,
+                resolved_type=dtcg_type(node.get("$type") or node.get("type"),
+                                        node.get("$value", node.get("value"))),
+                values={"Value": node.get("$value", node.get("value"))},
+                description=node.get("$description") or node.get("description") or "",
+                var_id=name,
+                deprecated=node.get("$deprecated") or False,
+                dtcg_type=str(node.get("$type") or node.get("type") or ""),
+            )
+            doc.variables.append(fv)
+            doc.by_id.setdefault(name, fv)
+            doc.by_id.setdefault(".".join(path), fv)
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "$root":                   # the group's own token
+                    walk(v, path)
+                elif k not in reserved:
+                    walk(v, path + [str(k)])
+
+    walk(data, [])
+    return doc
+
+
+def load_document(path: Path, forced: Optional[str], collection: str) -> FDoc:
+    data = json.loads(path.read_bytes())
+    shape = forced or detect_shape(data)
+    if shape == "rest":
+        doc = parse_rest(data)
+    elif shape == "plugin":
+        doc = parse_plugin(data)
+    elif shape == "records":
+        doc = parse_records(data, collection)
+    elif shape == "resolver":
+        doc = parse_resolver(data, path.parent)
+    else:
+        doc = parse_dtcg(data, collection)
+    attach_styles(doc, data)
+    # Fill in types the source omitted, from the value itself.
+    for v in doc.variables:
+        if v.resolved_type not in ("COLOR", "FLOAT", "STRING", "BOOLEAN"):
+            sample = next((x for x in v.values.values() if as_alias(x) is None), None)
+            v.resolved_type = dtcg_type(None, sample)
+    return doc
+
+
+def attach_styles(doc: FDoc, data: Any) -> None:
+    if not isinstance(data, dict):
+        return
+    buckets: List[Any] = [data.get("textStyles"), data.get("effectStyles")]
+    meta = data.get("meta")
+    if isinstance(meta, dict):
+        buckets += [meta.get("styles"), meta.get("textStyles"), meta.get("effectStyles")]
+    buckets.append(data.get("styles"))
+    for bucket in buckets:
+        rows: Iterable[Any]
+        if isinstance(bucket, dict):
+            rows = [{**v, "key": k} for k, v in bucket.items() if isinstance(v, dict)]
+        elif isinstance(bucket, list):
+            rows = [r for r in bucket if isinstance(r, dict)]
+        else:
+            continue
+        for row in rows:
+            st = str(row.get("styleType") or row.get("style_type") or row.get("type") or "").upper()
+            if st == "TEXT" or ("fontSize" in row or "style" in row):
+                if row not in doc.text_styles:
+                    doc.text_styles.append(row)
+            elif st == "EFFECT" or "effects" in row:
+                if row not in doc.effect_styles:
+                    doc.effect_styles.append(row)
